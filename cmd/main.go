@@ -12,8 +12,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	rv8 "github.com/go-redis/redis/v8"
 	mqtt "github.com/mochi-mqtt/server/v2"
+	"github.com/mochi-mqtt/server/v2/hooks"
 	"github.com/mochi-mqtt/server/v2/hooks/auth"
+	"github.com/mochi-mqtt/server/v2/hooks/storage/redis"
 	"github.com/mochi-mqtt/server/v2/listeners"
 )
 
@@ -46,14 +49,42 @@ func main() {
 	}
 
 	server := mqtt.New(nil)
-	_ = server.AddHook(new(auth.AllowHook), nil)
+	_ = server.AddHook(new(auth.Hook), &auth.Options{
+		Ledger: &auth.Ledger{
+			Auth: []auth.AuthRule{
+				{
+					Username: "mqtt", // 用户名密码匹配
+					Password: "aU8Zqus6gbjzo7mW",
+					Allow:    true,
+				},
+			},
+		},
+	})
+	// 先添加去重钩子，过滤重复消息
+	deduplication := hooks.NewDeduplicationHook()
+	server.AddHook(deduplication, nil)
+
+	// 再添加 IP 注入钩子，只处理非重复消息
+	ipInjector := hooks.NewIPInjectorHook()
+	server.AddHook(ipInjector, nil)
+
+	err := server.AddHook(new(redis.Hook), &redis.Options{
+		Options: &rv8.Options{
+			Addr:     "192.168.0.147:6379", // Redis服务端地址
+			Password: "W3gS3nslOOrRqRa6",   // Redis服务端的密码
+			DB:       1,                    // Redis数据库的index
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	tcp := listeners.NewTCP(listeners.Config{
 		ID:        "t1",
 		Address:   *tcpAddr,
 		TLSConfig: tlsConfig,
 	})
-	err := server.AddListener(tcp)
+	err = server.AddListener(tcp)
 	if err != nil {
 		log.Fatal(err)
 	}
