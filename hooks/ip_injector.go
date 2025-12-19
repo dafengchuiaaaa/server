@@ -10,12 +10,15 @@ import (
 
 // IPInjectorHook 用于在消息中注入 IP 地址
 type IPInjectorHook struct {
+	targetTopic []string
 	mqtt.HookBase
 }
 
 // NewIPInjectorHook 创建一个新的 IP 注入器钩子
 func NewIPInjectorHook() *IPInjectorHook {
-	return &IPInjectorHook{}
+	return &IPInjectorHook{
+		targetTopic: []string{"device/contact", "device/report/restart"},
+	}
 }
 
 // ID 返回 Hook 的 ID
@@ -30,8 +33,20 @@ func (h *IPInjectorHook) Provides(b byte) bool {
 	}, []byte{b})
 }
 
+func (h *IPInjectorHook) isTargetTopic(topic string) bool {
+	for _, t := range h.targetTopic {
+		if t == topic {
+			return true
+		}
+	}
+	return false
+}
+
 // OnPublish 在消息发布时注入 IP 地址
 func (h *IPInjectorHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Packet, error) {
+	if !h.isTargetTopic(pk.TopicName) {
+		return pk, nil
+	}
 	// 构建包含元数据的新 payload
 	newPayload := struct {
 		Meta struct {

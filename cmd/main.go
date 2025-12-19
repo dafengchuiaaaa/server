@@ -49,6 +49,11 @@ func main() {
 	}
 
 	server := mqtt.New(nil)
+	// server := mqtt.New(&mqtt.Options{
+	// 	Logger: slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	// 		Level: slog.LevelDebug,
+	// 	})),
+	// })
 	_ = server.AddHook(new(auth.Hook), &auth.Options{
 		Ledger: &auth.Ledger{
 			Auth: []auth.AuthRule{
@@ -68,6 +73,10 @@ func main() {
 	ipInjector := hooks.NewIPInjectorHook()
 	server.AddHook(ipInjector, nil)
 
+	// connect := hooks.NewConnectHook(server)
+	// server.AddHook(connect, nil)
+
+	//构建时候会自己改地址跟密码
 	err := server.AddHook(new(redis.Hook), &redis.Options{
 		Options: &rv8.Options{
 			Addr:     "192.168.0.147:6379", // Redis服务端地址

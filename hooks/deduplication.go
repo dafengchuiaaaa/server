@@ -2,7 +2,6 @@ package hooks
 
 import (
 	"encoding/json"
-	"fmt"
 	"sync"
 	"time"
 
@@ -26,6 +25,7 @@ type DeduplicationHook struct {
 	targetTopic    string        // 目标主题
 	timestampField string        // 时间戳字段
 	uuidField      string        // UUID 字段
+	countField     string        // count 字段
 	timeWindow     int64         // 时间窗口（秒）
 	cleanInterval  time.Duration // 清理间隔
 }
@@ -37,6 +37,7 @@ func NewDeduplicationHook() *DeduplicationHook {
 		targetTopic:    "device/contact", // 目标主题
 		timestampField: "timestamp",      // 时间戳字段
 		uuidField:      "uuid",           // UUID 字段
+		countField:     "count",          // count 字段
 		timeWindow:     20,               // 20秒内视为重复
 		cleanInterval:  5 * time.Minute,  // 5分钟清理一次缓存
 	}
@@ -82,13 +83,17 @@ func (h *DeduplicationHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packe
 		return pk, nil
 	}
 
-	// 提取时间戳
-	timestamp, ok := h.extractTimestamp(msgData, h.timestampField)
-	if !ok {
-		// 找不到时间戳，不过滤
-		h.Log.Debug("消息缺少时间戳字段")
+	// 提取 count，如果为 0 表示客户端刚启动，直接放行
+	if count, exists := h.extractInt(msgData, h.countField); exists && count == 0 {
+		h.Log.Debug("客户端启动消息，直接放行", "uuid", uuid)
+		// 重置该 UUID 的缓存时间
+		h.mu.Lock()
+		h.msgCache[uuid] = time.Now().Unix()
+		h.mu.Unlock()
 		return pk, nil
 	}
+
+	serverTime := time.Now().Unix()
 
 	// 检查是否为重复消息
 	h.mu.Lock()
@@ -96,19 +101,18 @@ func (h *DeduplicationHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packe
 
 	if lastTs, exists := h.msgCache[uuid]; exists {
 		// 计算时间差（秒）
-		timeDiff := timestamp - lastTs
+		timeDiff := serverTime - lastTs
 
 		// 如果时间差在窗口内，且新消息时间戳大于等于旧消息，视为重复
 		if timeDiff >= 0 && timeDiff <= h.timeWindow {
 			h.Log.Debug("过滤重复消息", "uuid", uuid, "time_diff", timeDiff)
 			// 更新时间戳为最新的
-			h.msgCache[uuid] = timestamp
+			// h.msgCache[uuid] = serverTime
 			return pk, packets.ErrRejectPacket // 拒绝此消息
 		}
 	}
-
 	// 不是重复消息，更新缓存
-	h.msgCache[uuid] = timestamp
+	h.msgCache[uuid] = serverTime
 	return pk, nil
 }
 
@@ -127,30 +131,24 @@ func (h *DeduplicationHook) extractString(data map[string]interface{}, field str
 	return strValue, true
 }
 
-// 从消息中提取时间戳
-func (h *DeduplicationHook) extractTimestamp(data map[string]interface{}, field string) (int64, bool) {
+// 从消息中提取 int 字段，区分 0 和不存在
+func (h *DeduplicationHook) extractInt(data map[string]interface{}, field string) (int64, bool) {
 	value, ok := data[field]
 	if !ok {
-		return 0, false
+		return 0, false // 字段不存在
 	}
 
-	// 尝试不同类型的转换
+	// JSON 解析数字默认为 float64
 	switch v := value.(type) {
 	case float64:
 		return int64(v), true
-	case int64:
-		return v, true
 	case int:
 		return int64(v), true
-	case string:
-		// 尝试将字符串转为数值
-		var timestamp int64
-		if _, err := fmt.Sscanf(v, "%d", &timestamp); err == nil {
-			return timestamp, true
-		}
+	case int64:
+		return v, true
+	default:
+		return 0, false
 	}
-
-	return 0, false
 }
 
 // 清理过期缓存
